@@ -1,0 +1,9 @@
+# 環境変数ファイル
+.env
+firebase_config.json
+
+# Python キャッシュ・環境関連
+__pycache__/
+*.pyc
+*.pyo
+venv/

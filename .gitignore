@@ -1,9 +1,20 @@
-# 環境変数ファイル
-.env
-firebase_config.json
-
-# Python キャッシュ・環境関連
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Virtual Environment
 venv/
+.env
+firebase-credentials.json
+
+# Logs
+logs/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

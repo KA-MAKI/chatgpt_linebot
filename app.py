@@ -1,147 +1,131 @@
 import os
 import json
 import logging
+import openai
+import firebase_admin
+from firebase_admin import credentials, firestore
 from flask import Flask, request, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import openai
-import firebase_admin
-from firebase_admin import credentials, firestore
 
-# ✅ ロギング設定（デバッグ用）
+# **📌 ログ設定（エラー検出を強化）**
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app")
 
-# ✅ 必要な環境変数を取得（Railway で設定済みの前提）
+# **📌 環境変数の取得（Railway の環境変数を利用）**
+GOOGLE_CLOUD_CREDENTIALS = os.getenv("GOOGLE_CLOUD_CREDENTIALS")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_CLOUD_CREDENTIALS = os.getenv("GOOGLE_CLOUD_CREDENTIALS")
 
-# ✅ 環境変数が不足している場合のエラーチェック
+# **📌 必須環境変数のチェック**
 missing_vars = []
+if not GOOGLE_CLOUD_CREDENTIALS:
+    missing_vars.append("GOOGLE_CLOUD_CREDENTIALS")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     missing_vars.append("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_SECRET:
     missing_vars.append("LINE_CHANNEL_SECRET")
 if not OPENAI_API_KEY:
     missing_vars.append("OPENAI_API_KEY")
-if not GOOGLE_CLOUD_CREDENTIALS:
-    missing_vars.append("GOOGLE_CLOUD_CREDENTIALS")
 
 if missing_vars:
-    error_message = f"❌ 環境変数が不足しています: {', '.join(missing_vars)}"
-    logger.error(error_message)
-    raise ValueError(error_message)
+    raise ValueError(f"環境変数が不足しています: {', '.join(missing_vars)}")
 
-# ✅ Firebase 初期化
+# **📌 Firebase 初期化**
 try:
     cred = credentials.Certificate(json.loads(GOOGLE_CLOUD_CREDENTIALS))
     firebase_admin.initialize_app(cred)
     db = firestore.client()
-    logger.info("✅ Firebase Firestore の初期化成功")
+    logger.info("✅ Firebase 初期化成功")
 except Exception as e:
     logger.error(f"❌ Firebase 初期化エラー: {e}")
-    raise
+    raise e
 
-# ✅ LINE Bot SDK 設定
+# **📌 LINE Bot API & WebhookHandler 初期化**
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ✅ OpenAI API 設定
-openai.api_key = OPENAI_API_KEY
-
-# ✅ Flask アプリ設定
+# **📌 Flask アプリの作成**
 app = Flask(__name__)
 
-# ✅ Webhook エンドポイント
-@app.route("/webhook", methods=["POST"])
-def webhook():
+# **📌 ルートエンドポイント（動作確認用）**
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ LINE Bot is running!", 200
+
+# **📌 LINE Webhook エンドポイント**
+@app.route("/callback", methods=["POST"])
+def callback():
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
-
-    logger.info(f"📩 受信したリクエスト: {body}")
+    
+    logger.info(f"📩 Webhook received: {body}")
 
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.error("❌ InvalidSignatureError: 署名が不正です。")
+        logger.error("❌ Invalid LINE Signature")
         return "Invalid signature", 400
     except Exception as e:
-        logger.error(f"❌ Webhook 処理エラー: {e}")
+        logger.error(f"❌ Webhook処理エラー: {e}")
         return "Internal Server Error", 500
 
     return "OK", 200
 
-# ✅ LINE からのメッセージイベント処理
+# **📌 メッセージイベント処理**
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
-    reply_token = event.reply_token
 
-    logger.info(f"📨 ユーザー [{user_id}] のメッセージ: {user_message}")
+    logger.info(f"📩 受信メッセージ: {user_message} from {user_id}")
 
-    # 🔄 Firestore にユーザーのメッセージを保存
+    # **📌 Firestore にメッセージを保存**
     try:
-        save_message(user_id, "user", user_message)
-    except Exception as e:
-        logger.error(f"❌ Firestore 保存エラー（ユーザーメッセージ）: {e}")
-
-    # 🤖 OpenAI API でレスポンスを生成
-    ai_response = get_ai_response(user_message)
-
-    # 🔄 Firestore に AI のレスポンスを保存
-    try:
-        save_message(user_id, "bot", ai_response)
-    except Exception as e:
-        logger.error(f"❌ Firestore 保存エラー（AI応答）: {e}")
-
-    # 📤 LINE へメッセージを返信
-    try:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
-        logger.info(f"📤 送信メッセージ: {ai_response}")
-    except Exception as e:
-        logger.error(f"❌ LINE 返信エラー: {e}")
-
-# ✅ OpenAI API を使用してレスポンスを生成
-def get_ai_response(user_input):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "あなたは親切なアシスタントです。"},
-                {"role": "user", "content": user_input}
-            ],
-            max_tokens=100,
-            temperature=0.7
-        )
-        ai_text = response["choices"][0]["message"]["content"].strip()
-        logger.info(f"🤖 OpenAI 応答: {ai_text}")
-        return ai_text
-    except Exception as e:
-        logger.error(f"❌ OpenAI API エラー: {e}")
-        return "すみません、現在応答を生成できません。"
-
-# ✅ Firestore にメッセージを保存
-def save_message(user_id, sender, text):
-    try:
-        db.collection("messages").add({
+        doc_ref = db.collection("messages").document()
+        doc_ref.set({
             "user_id": user_id,
-            "sender": sender,
-            "text": text,
+            "message": user_message,
+            "response": None,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
-        logger.info(f"✅ Firestore に保存成功: {sender} のメッセージ")
+        logger.info("✅ Firestore にメッセージ保存成功")
     except Exception as e:
         logger.error(f"❌ Firestore 保存エラー: {e}")
 
-# ✅ ヘルスチェック用エンドポイント
-@app.route("/", methods=["GET"])
-def health_check():
-    return "✅ LINE Bot 稼働中！", 200
+    # **📌 OpenAI API で返信を生成**
+    response_text = generate_openai_response(user_message)
 
-# ✅ Flask アプリ起動
+    # **📌 Firestore に返信を保存**
+    try:
+        doc_ref.update({"response": response_text})
+        logger.info("✅ Firestore に返信保存成功")
+    except Exception as e:
+        logger.error(f"❌ Firestore 更新エラー: {e}")
+
+    # **📌 LINE に返信を送信**
+    try:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response_text))
+        logger.info("✅ LINE 返信成功")
+    except Exception as e:
+        logger.error(f"❌ LINE 返信エラー: {e}")
+
+# **📌 OpenAI の応答を生成する関数**
+def generate_openai_response(user_input):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "あなたは親切な AI アシスタントです。"},
+                      {"role": "user", "content": user_input}],
+            api_key=OPENAI_API_KEY
+        )
+        return response["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"❌ OpenAI API エラー: {e}")
+        return "エラーが発生しました。しばらくしてから再試行してください。"
+
+# **📌 アプリ実行**
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=8080, debug=True)

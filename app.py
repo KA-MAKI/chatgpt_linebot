@@ -52,8 +52,8 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# **📌 OpenAI API 設定**
-openai.api_key = OPENAI_API_KEY
+# **📌 OpenAI API 設定** - 新しい形式に変更
+openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -64,13 +64,13 @@ def home():
 def callback():
     signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
-
+    
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         logger.error("❌ InvalidSignatureError: LINE Channel Secret が間違っている可能性あり")
         return "Invalid signature", 400
-
+    
     return "OK", 200
 
 # **📌 メッセージイベント処理**
@@ -79,7 +79,7 @@ def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
     reply_token = event.reply_token
-
+    
     # **📌 Firestore にログ保存**
     try:
         doc_ref = db.collection("messages").document()
@@ -91,20 +91,22 @@ def handle_message(event):
         logger.info(f"✅ Firestore にメッセージ保存成功: {user_message}")
     except Exception as e:
         logger.error(f"❌ Firestore 保存エラー: {e}")
-
-    # **📌 OpenAI API で応答生成**
+    
+    # **📌 OpenAI API で応答生成** - 新しい形式に変更
     try:
-        response = openai.ChatCompletion.create(
+        response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "system", "content": "You are a helpful assistant."},
-                      {"role": "user", "content": user_message}]
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": user_message}
+            ]
         )
-        bot_reply = response["choices"][0]["message"]["content"].strip()
+        bot_reply = response.choices[0].message.content.strip()
         logger.info(f"✅ OpenAI 返信生成成功: {bot_reply}")
     except Exception as e:
         logger.error(f"❌ OpenAI API エラー: {e}")
         bot_reply = "申し訳ありません。現在システムが利用できません。"
-
+    
     # **📌 LINE に返信**
     try:
         line_bot_api.reply_message(reply_token, TextSendMessage(text=bot_reply))
